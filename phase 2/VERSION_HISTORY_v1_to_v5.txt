@@ -1,0 +1,564 @@
+================================================================================
+  CISCO CFL DEMAND FORECASTING — COMPLETE VERSION HISTORY (v1.0 to v5.0)
+  The Full Journey: How Our Forecasting Model Evolved
+================================================================================
+
+  This document traces every version of our forecasting engine from the
+  initial Phase 1 baseline through the forensic-audited Phase 2 final.
+  Every change is explained: what it did, why, and what it fixed.
+
+================================================================================
+
+
+████████████████████████████████████████████████████████████████████████████████
+  VERSION 1.0 — THE FOUNDATION (Phase 1 Baseline)
+  Author: Pranav  |  Products: 30  |  Data: Phase 1 Excel
+████████████████████████████████████████████████████████████████████████████████
+
+WHAT IT WAS:
+  The first version built from scratch for the Phase 1 competition.
+  A classic 6-step demand planning pipeline following Cisco's own methodology
+  guidance. This was a "by-the-book" implementation.
+
+HOW IT WORKED:
+
+  Step 1: Weighted Moving Average (WMA)
+  ─────────────────────────────────────
+  - Used last 4 quarters of actual booking data
+  - Weights: [1, 2, 3, 4] / 10 (40% weight on most recent quarter)
+  - This gives more importance to recent data while not ignoring older trends
+  - Example: If last 4 quarters were [1000, 1200, 900, 1100]
+             WMA = (1000×1 + 1200×2 + 900×3 + 1100×4) / 10 = 1090
+
+  Step 2: Big Deal Cleaning
+  ─────────────────────────
+  - If big deals > 10% of total bookings in any quarter → flag that product
+  - For flagged products: use "Average Deals" (excluding big deals) as the
+    baseline for WMA instead of raw actuals
+  - Add back 50% of the average historical big deal amount
+  - WHY: Big deals create artificial spikes. If one quarter had a massive
+    one-time government order, WMA would be inflated. Cleaning removes this.
+
+  Step 3: Expert Ensemble
+  ───────────────────────
+  - Three expert forecasts available: Demand Planner (DP), Marketing (MK),
+    Data Science (DS)
+  - Simple bias correction: corrected = forecast / (1 + avg_bias)
+  - Outlier removal: if one expert forecasts > 2× another, drop the outlier
+  - Final ensemble = simple average of remaining forecasts
+  - Example: DP=1000, MK=950, DS=3500 → DS is >2× MK → drop DS
+             Ensemble = (1000 + 950) / 2 = 975
+
+  Step 4: Lifecycle-Based 3-Component Blending
+  ─────────────────────────────────────────────
+  - Each product has a lifecycle stage: Sustaining, Decline, NPI-Ramp
+  - Different stages get different blend weights:
+      Sustaining:  25% WMA + 25% Trend + 50% Expert Ensemble
+      Decline:     40% WMA + 30% Trend + 30% Ensemble
+      NPI-Ramp:    10% WMA +  5% Trend + 85% Ensemble (trust experts most)
+  - WHY: Declining products need more statistical grounding (WMA/trend).
+    New products have little history, so experts matter more.
+
+  Step 5: Q2 Seasonal Index
+  ─────────────────────────
+  - seasonal_idx = avg(Q2 values) / avg(all quarters)
+  - Bounded between [0.70, 1.40] to prevent extreme adjustments
+  - Applied as a multiplier: forecast × seasonal_idx
+  - Example: If Q2 historically runs 20% above average → multiply by 1.20
+
+  Step 6: Sanity Checks
+  ─────────────────────
+  - Asymmetric loss penalty: for uncertain high-cost products, shade 5-8% below
+  - SCMS/VMS segment trend adjustments (±3-5%)
+  - QoQ bounds: flag if forecast > ±30% from last actual
+
+STRENGTHS:
+  - Clean, systematic pipeline that follows established methodology
+  - Used ALL available data: actuals, experts, big deals, SCMS, VMS
+  - Lifecycle-aware blending
+
+WEAKNESSES (discovered later):
+  - Expert weighting was naive (simple average, not accuracy-weighted)
+  - Bias correction was simplistic: divided by (1+bias) instead of
+    subtracting proportional bias
+  - Seasonal index was a simple ratio, not recency-weighted
+  - No per-product tuning — same rules for all 30 products
+  - No backtesting framework to validate accuracy
+
+RESULT: ~77% accuracy in Phase 1 competition (last place)
+
+
+████████████████████████████████████████████████████████████████████████████████
+  VERSION 2.0 — SMARTER EXPERT WEIGHTING (Phase 1 Improved)
+  Author: Pranav  |  Products: 30
+████████████████████████████████████████████████████████████████████████████████
+
+WHAT CHANGED FROM v1.0:
+
+  Change 1: Accuracy²-Weighted Expert Ensemble
+  ─────────────────────────────────────────────
+  - v1.0 used simple average of expert forecasts
+  - v2.0 weights each expert by their accuracy SQUARED
+  - Formula: weight_i = accuracy_i² / sum(all accuracy_i²)
+  - WHY: Squaring amplifies the difference between good and bad experts.
+    An expert with 90% acc gets weight 0.81, while 60% acc gets 0.36 — 
+    the better expert gets 2.25× more influence instead of just 1.5×
+  - Holdout test: Reduced ensemble MAPE from 20.9% to 18.5% (2.4pp improvement)
+
+  Change 2: Damped Trend (Gardner-McKenzie 1985)
+  ───────────────────────────────────────────────
+  - v1.0 used raw linear trend extrapolation (y = a + bx)
+  - Problem: volatile products would get extreme trend forecasts
+  - v2.0 applies a damping factor: phi = max(0.80, min(0.98, 1.0 - CV × 0.30))
+    where CV = coefficient of variation of the actual data
+  - High volatility → lower phi → more damping → pulls trend toward mean
+  - Holdout test: Reduced trend MAPE from 42.7% to 34.1% (8.6pp improvement!)
+  - WHY: The more erratic a product's history, the less we should trust
+    pure trend extrapolation. A product bouncing between 500 and 5000
+    shouldn't be forecasted at 10,000 just because the trend line points up.
+
+  Change 3: Recency-Weighted Seasonal Index
+  ──────────────────────────────────────────
+  - v1.0: seasonal_idx = avg(all Q2 values) / avg(all quarters)  [equal weight]
+  - v2.0: FY25Q2 gets 60% weight, FY24Q2 gets 30%, FY23Q2 gets 10%
+  - WHY: Recent seasonality is more relevant. If Q2 has been getting stronger
+    over time, older Q2 values drag the index down. Recency weighting
+    captures the current seasonal pattern.
+
+STRENGTHS:
+  - All changes were backed by holdout testing (not intuition)
+  - Damped trend dramatically reduced forecast error on volatile products
+  - acc² weighting gave better experts more influence
+
+WEAKNESSES:
+  - Still had Phase 1's 30-product scope (became 20 in Phase 2)
+  - Bias correction still simplistic
+  - No structural independence analysis
+  - Expert accuracy measured across only 3 quarters (noisy estimates)
+
+RESULT: Improved over v1.0 but still building the foundation for Phase 2
+
+
+████████████████████████████████████████████████████████████████████████████████
+  VERSION 3.0 — PHASE 2 ARCHITECTURE REDESIGN
+  Author: Pranav  |  Products: 20 (Phase 2 dataset)  |  Total: ~72,530
+████████████████████████████████████████████████████████████████████████████████
+
+WHAT CHANGED FROM v2.0:
+
+  This was a COMPLETE REWRITE for the Phase 2 competition. The Phase 2 dataset
+  had different product scope (20 products instead of 30) and new data sheets.
+
+  Change 1: Expert-Anchored Architecture
+  ───────────────────────────────────────
+  - v2.0: WMA+Trend+Ensemble blend with lifecycle weights
+  - v3.0: TWO-LAYER architecture:
+      Layer 1: Expert Anchor (weighted blend of DP, MK, DS)
+      Layer 2: Structural Signals (independent forecasting methods)
+      Final = expert_weight × Anchor + (1-expert_weight) × Structural
+  - WHY: The Phase 1 pipeline treated experts as one of three equal inputs.
+    But analysis showed experts consistently outperform pure statistical
+    methods for most products. Making experts the PRIMARY anchor and using
+    structural signals as guardrails is more accurate.
+
+  Change 2: Seven Structural Signals
+  ───────────────────────────────────
+  - v2.0 used only WMA and trend as statistical inputs
+  - v3.0 computed SEVEN independent signals:
+      1. Q2/Q1 ratio × FY26Q1  (seasonal ratio)
+      2. YoY Q2 growth × FY25Q2  (year-over-year Q2 trend)
+      3. Q2 weighted average (50/35/15% across 3 Q2 quarters)
+      4. MA4 (simple average of last 4 quarters)
+      5. Big Deal Q2 forecast (decomposed big + average deals)
+      6. SCMS bottom-up (sum of per-channel Q2 forecasts)
+      7. VMS bottom-up (sum of per-vertical Q2 forecasts)
+  - Structural composite = MEDIAN of all signals (robust to outliers)
+
+  Change 3: Granular Expert Weighting Tiers
+  ──────────────────────────────────────────
+  - v2.0: Fixed lifecycle-based weights
+  - v3.0: Expert weight determined by average expert accuracy:
+      ≥85% acc → 82% expert / 18% structural
+      ≥75% acc → 72% expert / 28% structural
+      ≥65% acc → 65% expert / 35% structural
+      ≥50% acc → 55% expert / 45% structural
+      ≥30% acc → 40% expert / 60% structural
+      <30% acc → 25% expert / 75% structural
+  - WHY: When experts are very good, trust them more. When they're terrible,
+    lean on structural signals instead. This adapts per product.
+
+  Change 4: Consistency-Gated Bias Correction
+  ────────────────────────────────────────────
+  - v2.0: Simple corrected = forecast / (1 + avg_bias)
+  - v3.0: Check if bias is CONSISTENT across quarters:
+      If bias direction is the same in 2+ of 3 quarters → correct by 50%
+      If bias direction oscillates → correct by only 20%
+      If bias is near-zero (<3%) → no correction
+  - WHY: An expert who consistently over-predicts by 20% has a systematic
+    issue worth correcting. An expert whose bias flips between +15% and
+    -10% has random error, not systematic bias — correction would add noise.
+
+  Change 5: Garbage Expert Exclusion
+  ──────────────────────────────────
+  - If an expert has <5% accuracy or forecasts 0, they're excluded entirely
+  - Their forecast doesn't enter the weighted blend at all
+  - Applied to: MK on Product #19 (0% acc, forecast 5000),
+                MK on Product #20 (0 forecast),
+                DP on Product #19 (3% acc)
+
+RESULT: Total forecast ~72,530 units across 20 products
+
+
+████████████████████████████████████████████████████████████████████████████████
+  VERSION 4.0 — SURGICAL PRODUCT-LEVEL TUNING
+  Author: Pranav  |  Products: 20  |  Total: 73,226 (+696 from v3.0)
+████████████████████████████████████████████████████████████████████████████████
+
+WHAT CHANGED FROM v3.0:
+
+  Change 1: Proper SCMS/VMS Q2 Bottom-Up
+  ───────────────────────────────────────
+  - v3.0 used FY26Q1 totals for SCMS/VMS bottom-up (WRONG — these are Q1
+    values, not Q2 values)
+  - v4.0 extracts Q2-SPECIFIC segment history (quarter indices 1, 5, 9 in
+    the 13-quarter SCMS/VMS arrays correspond to Q2 quarters)
+  - Applies recency weighting to Q2 history: 50/35/15%
+  - WHY: Using Q1 data to forecast Q2 ignores seasonality within segments.
+    Some channels (e.g., ENTERPRISE) spike in Q2 due to budget flush cycles.
+
+  Change 2: Product-Specific Overrides
+  ─────────────────────────────────────
+  - v3.0 treated all products with the same framework
+  - v4.0 added surgical overrides for 5 pathological products:
+    
+    Product #1 (WiFi AP): Q2 seasonal spike product
+      - Experts forecast 2200-3200, but Q2 history shows 2284→6651→8293
+      - Experts are forecasting Q1-level demand, missing the Q2 spike
+      - Override: reduce expert weight to 40%, lean on structural signals
+    
+    Product #9 (IP Phone Desk_2): Q2 is stable despite overall volatility
+      - Q2 history: 8791, 6184, 7891 (relatively stable ~7600 avg)
+      - But non-Q2 quarters are wildly erratic (29K, 33K, 30K)
+      - Override: blend expert anchor with Q2-specific average
+    
+    Product #11 (Switch HPPoE): All experts terrible (<62% accuracy)
+      - Relied on structural signals instead (35% expert / 65% structural)
+    
+    Product #19 (Router 4P PoE): Only DS is valid (71% acc)
+      - DP at 3% acc and MK at 0% acc → both EXCLUDED
+      - DS-only anchor with 55% expert weight
+    
+    Product #20 (Router LTE Wireless): MK excluded (0 forecast)
+      - Only DP and DS used, evenly weighted (50/50 blend)
+
+  Change 3: Tightened Sanity Bounds
+  ─────────────────────────────────
+  - v3.0: Loose bounds of ±80% from last actual
+  - v4.0: ±60% lower / ±125% upper from credible consensus range
+  - Credible range = [min(all valid expert forecasts, recent actuals),
+                      max(all valid expert forecasts, recent actuals)]
+
+NOTABLE v3.0 → v4.0 PRODUCT CHANGES:
+  #1  WiFi AP:        4,646 → 5,505  (+18.5%)  [Q2 spike override]
+  #9  Phone Desk_2:   8,786 → 8,300  (-5.5%)   [Q2 stable override]
+  #20 Router LTE:     1,554 → 1,690  (+8.8%)   [MK exclusion fix]
+
+RESULT: Total forecast 73,226 units (+696 from v3.0, +1.0%)
+
+
+████████████████████████████████████████████████████████████████████████████████
+  VERSION 4.0 → 5.0: THE FORENSIC AUDIT
+████████████████████████████████████████████████████████████████████████████████
+
+Before building v5.0, we ran a DEEP FORENSIC AUDIT of v4.0. This involved:
+
+  1. Deep Analysis Script (deep_analysis.py):
+     - Computed all raw data, expert correlations, Q2/Q1 ratios, YoY rates,
+       big deal decomposition, SCMS/VMS channel trends for all 20 products
+     - Generated 70,000+ characters of analysis in deep_analysis_full.txt
+
+  2. Forensic Audit Script (forensic_audit.py):
+     - Backtested all forecasting methods against known FY25Q2 actuals
+     - For each product, compared: ratio FC, YoY FC, MA4, Big Deal FC,
+       SCMS BU, VMS BU against what actually happened
+     - Identified which methods work for which products and which are garbage
+
+  3. Line-by-Line Output Audit:
+     - Manually traced through every product's forecast card in the v4.0 output
+     - Checked: Is the anchor reasonable? Is the structural median sensible?
+     - Flagged every case where the math produced a nonsensical result
+
+THIS AUDIT FOUND 8 CRITICAL FLAWS IN v4.0 (detailed below)
+
+
+████████████████████████████████████████████████████████████████████████████████
+  VERSION 5.0 — CRYSTAL CUTTHROAT (Forensic-Audited)
+  Author: Pranav  |  Products: 20  |  Total: 69,361 (-3,865 from v4.0)
+████████████████████████████████████████████████████████████████████████████████
+
+EIGHT FLAWS FOUND AND FIXED:
+
+═══════════════════════════════════════════════════════════════════════════════
+FLAW #1 [CATASTROPHIC] — Product #4 was over-forecasted by ~60%
+═══════════════════════════════════════════════════════════════════════════════
+
+  THE PROBLEM:
+  v4.0 forecasted 15,239 for IP Phone Desk_1.
+  But Demand Planner (DP) has 87.7% accuracy with -0.8% bias (essentially
+  PERFECT) and forecasts only 9,500.
+
+  HOW IT HAPPENED:
+  - v4.0 used acc² weighting to blend experts:
+      DP (88% acc): weight = 0.877² = 0.769  →  9,500 × 0.769 = 7,306
+      MK (71% acc): weight = 0.706² = 0.498  → 14,193 × 0.498 = 7,068
+      DS (68% acc): weight = 0.681² = 0.464  → 18,984 × 0.464 = 8,809
+  - Expert anchor = (7,306 + 7,068 + 8,809) / (0.769+0.498+0.464) = 13,391
+  - DS at 68% accuracy with an ABSURD 22,593 forecast (bias-corrected to
+    18,984) dragged the anchor from 9,500 all the way up to 13,391
+  - Then structural median at 18,010 pushed it up further
+  - Final: 13,391 × 0.60 + 18,010 × 0.40 = 15,239
+
+  THE FIX (v5.0):
+  Two new mechanisms:
+  
+  a) DOMINANT EXPERT RULE: If the best expert has ≥82% accuracy AND is
+     ≥8% better than the second-best expert:
+       Anchor = 80% best expert + 20% acc³-weighted blend of others
+     For Product #4: DP (88%) vs MK (71%) — gap is 17%, rule triggers
+       Anchor = 9,500 × 0.80 + others × 0.20 = ~10,891
+  
+  b) acc³ WEIGHTING (instead of acc²): DP gets 0.675 vs DS gets 0.316
+     More aggressive penalization of bad experts
+  
+  RESULT: v4.0 = 15,239 → v5.0 = 11,432 (−25%)
+
+
+═══════════════════════════════════════════════════════════════════════════════
+FLAW #2 [CRITICAL] — Five of seven structural signals were CORRELATED
+═══════════════════════════════════════════════════════════════════════════════
+
+  THE PROBLEM:
+  v4.0 used 7 structural signals and took their MEDIAN. But 5 of them
+  were derived from the SAME underlying Q2 actual data:
+
+  Signal               Source Data               Independent?
+  ────────────────────  ────────────────────────  ───────────
+  Q2/Q1 ratio FC       Q2 actuals + Q1 actuals   YES
+  YoY Q2 growth FC     Q2-to-Q2 growth rate      YES
+  Q2 weighted average  Q2 actuals directly        NO (= raw Q2 data)
+  MA4                  Last 4 quarters            PARTIALLY
+  Big Deal Q2 FC       Q2 big + avg = Q2 actual   NO (= Q2 total)
+  SCMS Q2 BU           Q2 channel sums = Q2 tot   NO (= Q2 total)
+  VMS Q2 BU            Q2 vertical sums = Q2 tot  NO (= Q2 total)
+
+  The Big Deal FC, SCMS BU, and VMS BU are literally just different
+  DECOMPOSITIONS of the same Q2 actual number. Adding them all to the
+  median means counting the same information 4 times!
+
+  Example (Product #8, IP Video Desk):
+    Q2 Wt Avg = 14,834  (from Q2 actuals 52058, 12867, 5044)
+    SCMS BU   = 14,834  (same data, summed by channel)
+    VMS BU    = 14,844  (same data, summed by vertical)
+    These three are essentially IDENTICAL numbers. Having all three in
+    the median makes the median = Q2 weighted average no matter what.
+
+  THE FIX (v5.0):
+  Removed Q2 weighted average, Big Deal FC, SCMS BU, and VMS BU from
+  the structural median. Only 3 truly independent signals remain:
+    1. Q2/Q1 Ratio FC  (uses current Q1 as base)
+    2. YoY Q2 Growth FC  (uses Q2-to-Q2 trend)
+    3. MA4  (partially independent, uses all 4 recent quarters)
+
+  SCMS/VMS are now "validation signals" — displayed for reference but
+  NOT used in the structural median calculation.
+
+
+═══════════════════════════════════════════════════════════════════════════════
+FLAW #3 [CRITICAL] — Product #2 forecasted BELOW its own most recent quarter
+═══════════════════════════════════════════════════════════════════════════════
+
+  THE PROBLEM:
+  Switch Enterprise 8-Port PoE+ with Fiber Uplink is a GROWTH product.
+  FY26Q1 actual = 5,815 (higher than FY25Q2 = 4,290 — growth confirmed!)
+  But v4.0 forecasted only 4,641.
+
+  HOW IT HAPPENED:
+  - Structural median = 2,665 (dragged down by zero Q2 history in
+    SCMS/VMS — this product barely existed in earlier Q2 periods)
+  - 65% expert (5,704) + 35% structural (2,665) = 4,641
+  - The structural component pulled the forecast below FY26Q1
+
+  THE FIX (v5.0):
+  GROWTH PRODUCT FLOOR: If FY26Q1 > FY25Q2 (growth confirmed):
+    - Structural floor = FY26Q1 × 0.85
+    - Final forecast floor = FY26Q1 × 0.90
+  This prevents the nonsensical situation of forecasting a growing
+  product below its current demand level.
+
+  RESULT: v4.0 = 4,641 → v5.0 = 5,800 (+25%)
+
+
+═══════════════════════════════════════════════════════════════════════════════
+FLAW #4 [MAJOR] — Structural signals ignored FY26Q1 crash
+═══════════════════════════════════════════════════════════════════════════════
+
+  THE PROBLEM:
+  Products with a recent Q1 crash (FY26Q1 << FY25Q1) had structural
+  signals based on OLD, high-demand quarters. The YoY Q2 and MA4 signals
+  are backward-looking and don't know that Q1 just collapsed.
+
+  Example (Product #4):
+    FY25Q1 = 27,684 → FY26Q1 = 11,659 (dropped 58%!)
+    But MA4 = 19,002 (uses FY25Q2=19180, FY25Q3=26305, FY25Q4=5887, FY26Q1=11659)
+    And YoY Q2 = 20,232 (based on old Q2 growth of +5.5%)
+    Neither signal reflects the current crash.
+
+  THE FIX (v5.0):
+  FY26Q1-AWARE STRUCTURAL INTELLIGENCE:
+  If FY26Q1 dropped > 25% from FY25Q1:
+    - Q2/Q1 ratio FC gets 60% weight (it uses CURRENT Q1 as base)
+    - YoY and MA4 (backward-looking) share 40% weight
+  This ensures the structural composite responds to recent demand shifts.
+
+
+═══════════════════════════════════════════════════════════════════════════════
+FLAW #5 [MAJOR] — Structural cap used max(Q1, Q2) — wrong for decline
+═══════════════════════════════════════════════════════════════════════════════
+
+  THE PROBLEM:
+  v4.0's structural cap for decline products used:
+    cap = max(FY26Q1, FY25Q2) × 1.10
+  For Product #4: max(11659, 19180) × 1.10 = 21,098 — way too high!
+  The old Q2 of 19,180 inflated the cap, making it useless.
+
+  THE FIX (v5.0):
+  Cap based on Q2/Q1 ratio × FY26Q1 (if available):
+    cap = max(ratio_fc, FY26Q1) × 1.15
+  This uses CURRENT demand levels, not historical peaks.
+
+
+═══════════════════════════════════════════════════════════════════════════════
+FLAW #6 [MODERATE] — Q2/Q1 ratio had no cap → extreme outlier signals
+═══════════════════════════════════════════════════════════════════════════════
+
+  THE PROBLEM:
+  Product #14 (Switch 8P Ethernet) had Q2/Q1 ratio of 2.83 (from a
+  one-time spike quarter: FY25Q2=10,291 / FY25Q1=3,638).
+  Product #20 had ratio of 4.01 (seasonal anomaly).
+  These extreme ratios produced absurd structural forecasts:
+    #14: 6,327 × 2.83 = 17,902 → wildly inflated
+    #20: 1,053 × 4.01 = 4,222 → misleading
+
+  THE FIX (v5.0):
+  Cap Q2/Q1 ratio at [0.20, 2.0]:
+    - Maximum 2.0 prevents spike-quarter ratios from producing absurd signals
+    - Minimum 0.20 prevents collapse-quarter ratios from zeroing out forecasts
+  After cap: #14 ratio = 2.0 → 6,327 × 2.0 = 12,654 (still high but bounded)
+
+
+═══════════════════════════════════════════════════════════════════════════════
+FLAW #7 [MODERATE] — Dominant expert rule gap threshold too strict
+═══════════════════════════════════════════════════════════════════════════════
+
+  THE PROBLEM:
+  The initial dominant expert rule required a 12% accuracy gap between
+  the best and second-best expert. Product #14's MK (83%) vs DP (75%)
+  had only an 8% gap — just below the threshold.
+  Result: MK's accurate 7,017 forecast was diluted by worse experts.
+
+  THE FIX: Lowered gap threshold from 12% to 8%.
+  Now catches more cases where one expert is clearly superior.
+
+
+═══════════════════════════════════════════════════════════════════════════════
+FLAW #8 [MODERATE] — Products #7 and #17: High-accuracy experts overridden
+═══════════════════════════════════════════════════════════════════════════════
+
+  THE PROBLEM:
+  Product #7:  DS has 85% accuracy, forecasts 805 → v4.0 gave 651 (19% below)
+  Product #17: MK has 93% accuracy, forecasts 798 → v4.0 gave 720 (10% below)
+  
+  In both cases, structural signals were pulling the forecast DOWN away from
+  experts that had proven reliability.
+
+  THE FIX:
+  The dominant expert rule (from Flaw #1 fix) now catches these products:
+    #7:  DS 85% >> MK 77% (gap 8%) → dominant rule applies
+    #17: MK 93% >> DP 71% (gap 22%) → dominant rule applies
+  
+  RESULT: #7: 651 → 723 (+11%)  |  #17: 720 → 821 (+14%)
+
+
+════════════════════════════════════════════════════════════════════════════════
+  COMPLETE v4.0 → v5.0 DELTA TABLE
+════════════════════════════════════════════════════════════════════════════════
+
+  #   Product                          v4.0    v5.0    Delta   %Chg  Key Fix
+  ──  ───────────────────────────────  ──────  ──────  ──────  ─────  ─────────────
+  1   WiFi AP Indoor                   5,505   5,104    -401   -7.3  Ratio capped
+  2   Switch PoE+ Fiber                4,641   5,800  +1,159  +25.0  Growth floor
+  3   Router LTE PoE                   4,301   5,638  +1,337  +31.1  Growth floor
+  4   IP Phone Desk_1                 15,239  11,432  -3,807  -25.0  DOMINANT DP
+  5   Switch Ind PoE                   1,324   1,444    +120   +9.1  acc^3
+  6   Router Edge Fiber                  850     688    -162  -19.1  Decline cap
+  7   Switch UPOE 25G                    651     723     +72  +11.1  DOMINANT DS
+  8   IP Phone Video                   5,960   5,543    -417   -7.0  Q1-aware struct
+  9   IP Phone Desk_2                  8,300   7,385    -915  -11.0  Q1-aware struct
+  10  IP Phone Desk_3                  8,890   7,969    -921  -10.4  Q1-aware struct
+  11  Switch HP PoE                      577     606     +29   +5.0  acc^3 blend
+  12  Switch Ind Eth                   1,557   1,622     +65   +4.2  Struct indep.
+  13  Switch DC Core                     399     396      -3   -0.8  Stable
+  14  Switch 8P Eth                    7,756   9,159  +1,403  +18.1  DOMINANT MK
+  15  Firewall NG_1                      680     634     -46   -6.8  Struct indep.
+  16  Firewall NG_2                      451     446      -5   -1.1  Stable
+  17  Switch Ind 24P                     720     821    +101  +14.0  DOMINANT MK
+  18  DC 400G Spine                      123     129      +6   +4.9  Stable
+  19  Router 4P PoE                    3,612   2,220  -1,392  -38.5  Q1-aware+decline
+  20  Router LTE Wireless              1,690   1,602     -88   -5.2  Ratio capped
+  ──  ───────────────────────────────  ──────  ──────  ──────  ─────  ─────────────
+      TOTAL                           73,226  69,361  -3,865   -5.3
+
+
+════════════════════════════════════════════════════════════════════════════════
+  SUMMARY: VERSION-BY-VERSION EVOLUTION
+════════════════════════════════════════════════════════════════════════════════
+
+  Version  Products  Total     Author   Core Innovation
+  ───────  ────────  ────────  ───────  ─────────────────────────────────────
+  v1.0     30        ~77K      Pranav   6-step pipeline (WMA+Trend+Ensemble)
+  v2.0     30        ~77K      Pranav   acc^2 weighting, damped trend
+  v3.0     20        ~72,530   Pranav   Expert-anchored 2-layer architecture
+  v4.0     20        73,226    Pranav   Product-specific overrides, Q2 BU
+  v5.0     20        69,361    Pranav   Forensic audit: 8 flaws fixed
+
+  KEY LEARNINGS ACROSS ALL VERSIONS:
+
+  1. EXPERTS > STATISTICS (for most products)
+     Every version that increased expert weight on reliable products improved.
+     The best forecasts came from products where experts had >80% accuracy.
+
+  2. SIGNAL INDEPENDENCE MATTERS
+     Having 7 signals sounds better than 3, but not when 5 of them are
+     the same data in different packaging. Quality > quantity.
+
+  3. TEST EVERYTHING
+     v2.0's damped trend improvement (8.6pp) was discovered through holdout
+     testing, not intuition. v4.0's Product #4 flaw (60% overforecast) was
+     discovered through forensic auditing. Never trust a model you haven't
+     stress-tested.
+
+  4. DOMINANT EXPERTS DESERVE DOMINANT WEIGHT
+     When one expert has 88% accuracy and another has 68%, the better expert
+     should drive the forecast. acc^2 weighting wasn't aggressive enough.
+     The dominant expert rule (80% anchor on best when gap ≥8%) was the
+     single most impactful fix.
+
+  5. RECENT DATA > HISTORICAL DATA
+     When FY26Q1 crashed, backward-looking signals (MA4, YoY) became stale.
+     The Q2/Q1 ratio signal — which uses CURRENT Q1 as its base — was
+     the only structural signal that responded to recent reality.
+
+================================================================================
+  END OF VERSION HISTORY
+  Generated: April 2026
+================================================================================
