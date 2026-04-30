@@ -434,7 +434,7 @@ Some demand spikes come from events in a sales pipeline, mega-deals, enterprise 
 **Intellectual honesty compounds.**
 We reverted changes that hurt. We killed a model we spent days building. We documented the flaws we found in our own work. That discipline, being willing to be wrong about your own decisions, is what separated our v7.0 from the spaghetti most teams submit at the end.
 
----
+----
 
 ## 📜 License
 
